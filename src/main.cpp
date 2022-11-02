@@ -18,7 +18,11 @@ int timeoutAlive = 0;
 typedef struct par {
   String par1;
 }par;
-
+String server;
+uint16_t porta; 
+String ssid;
+String pass;
+void taskCliente(void *arg);
 
 void gravaArquivoConfigRest(String content) {
   if (SPIFFS.begin(true))
@@ -84,13 +88,17 @@ void WiFiEvent(WiFiEvent_t event)
 {
   switch(event){
     case SYSTEM_EVENT_STA_CONNECTED:
-      WiFi.enableIpV6();
+      WiFi.enableIpV6();     
     break;
     case SYSTEM_EVENT_STA_GOT_IP:
+      Serial.println("Conectado...");
+      Serial.println(WiFi.localIP().toString());
+      config["statusConWifi"] = "Conectado com IP "+ WiFi.localIP().toString();
       break;
     case SYSTEM_EVENT_GOT_IP6:
       break;
     case SYSTEM_EVENT_STA_DISCONNECTED:
+      Serial.println("Disconectado...");
       break;
     case SYSTEM_EVENT_STA_LOST_IP:
       break;
@@ -128,10 +136,14 @@ void iniciaWifi() {
   WiFi.setAutoReconnect(true);
   WiFi.softAP("neuverse", "neuverse");
   WiFi.onEvent(WiFiEvent);
-  if(config["ssidSessao"]["ssid"] != "" && config["ssidSessao"]["password"] != "") {
-    String ssid = config["ssidSessao"]["ssid"];
-    String pass = config["ssidSessao"]["password"];
+  config["statusConWifi"] = "Iniciado";
+  if(ssid != "" && pass != "") {
+    
+    config["statusConWifi"] = "Conectando com "+ssid+" "+pass;
+    Serial.println("Conectado Wifi "+ssid+" "+pass);
     WiFi.begin(ssid.c_str(), pass.c_str());
+     xTaskCreatePinnedToCore(taskCliente, "taskCliente",2048*4,NULL,4,NULL,APP_CPU_NUM);
+
   }
 }
 
@@ -202,8 +214,6 @@ void processar(String dados) {
 
 void taskCliente(void *arg) {
   
-  String server = config["servidorSessao"]["endereco"];
-  uint16_t porta = config["servidorSessao"]["porta"];
   int32_t timeout = 10000;
   while(1) {
    if (cli.connect(server.c_str(), porta,timeout)) {
@@ -229,9 +239,17 @@ void setup() {
   Serial.begin(115200);  
   SerialBT.begin("neuverseBTIot");
   leArquivoConfig();
+  config["statusConWifi"] = "Aguardando";
+   String serverLocal =config["servidorSessao"]["endereco"];
+  server = serverLocal;
+  porta = config["servidorSessao"]["porta"];
+  String ssidLocal = config["ssidSessao"]["ssid"];
+  String passLocal = config["ssidSessao"]["password"];
+  ssid = ssidLocal;
+  pass = passLocal;
+  iniciaWifi();
   xTaskCreatePinnedToCore(taskConfig, "taskConfig",2048,NULL,4,NULL,APP_CPU_NUM);
-  xTaskCreatePinnedToCore(taskCliente, "taskCliente",2048*4,NULL,4,NULL,APP_CPU_NUM);
-}
+} 
 
 void loop() {
 }
