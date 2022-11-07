@@ -11,13 +11,21 @@
 #define _30S 30*1000
 
 BluetoothSerial SerialBT;
-DynamicJsonDocument config(2048);
-DynamicJsonDocument doc(2048);
+DynamicJsonDocument config(4096);
+DynamicJsonDocument doc(4096);
 WiFiClient cli;
 int timeoutAlive = 0;
 typedef struct par {
   String par1;
 }par;
+typedef struct pino {
+  int pinInterrupcao;
+  int pinOUT;
+  int pinIN;
+  String tipo;
+  int direcao;
+  int pinosOUT[10] ={-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
+}pino;
 String server;
 uint16_t porta; 
 String ssid;
@@ -43,8 +51,12 @@ String leArquivoConfig() {
     File fConfig = SPIFFS.open(F("/config.json"), "r");
     if (fConfig) {
       sConfig = fConfig.readString();
+      Serial.println("Arquivo Cfg:"+sConfig);
       if (sConfig != "" && sConfig != NULL) {
-        deserializeJson(config, sConfig);
+        DeserializationError error = deserializeJson(config, sConfig);
+        if (error != NULL) {
+          return "";
+        }
       }
       else
         sConfig ="";
@@ -59,7 +71,7 @@ void taskConfig(void *arg) {
   while(true){
     if(SerialBT.available())
     {
-      String data = SerialBT.readString();
+      String data = SerialBT.readStringUntil('\r');
       Serial.println(data);
       DeserializationError error = deserializeJson(doc, data);
       if (error == NULL) {
@@ -82,6 +94,7 @@ void taskConfig(void *arg) {
     }
     vTaskDelay(1000);
   }
+   vTaskDelete(NULL);
 }
 
 void WiFiEvent(WiFiEvent_t event)
@@ -147,21 +160,63 @@ void iniciaWifi() {
   }
 }
 
-String login()
+
+String atualizar(int pin,String status)
 {
-  DynamicJsonDocument doc(2048);
+  DynamicJsonDocument doc(4096);
   //int id = config["conectorSessao"]["id"];
   String nome = config["conectorSessao"]["nome"];
   String usuario = config["conectorSessao"]["usuario"];
   String senha = config["conectorSessao"]["senha"];
+  String btnsJson  = config["buttonIOTSessao"];
   String retorno = "";
-  //doc["id"] = id;
+
+  DynamicJsonDocument buttonIOTs(4096);
+  deserializeJson(buttonIOTs,btnsJson);
+
+  for(int i=0;i<buttonIOTs.size();i++) {
+    int out = buttonIOTs[i]["gpioNumControle"];
+    if(out == pin){
+      buttonIOTs[i]["status"] = status;
+      break;
+    }
+  }  
+  doc["status"] = "NOTIFICACAO";
+  doc["tipo"] = "IOT";
   doc["nome"] = nome;
   doc["usuario"] = usuario;
   doc["senha"]   = senha;
-  //doc["iot"]["id"] = 0;
-  doc["iot"]["name"] = "nameIot";
+  doc["iot"]["name"] = "Testando....";
+  doc["iot"]["jSon"] = btnsJson;
+  doc["buttons"] = buttonIOTs;
+  serializeJson(doc, retorno);
+  return retorno + "\r\n";
+}
+
+String login()
+{
+  DynamicJsonDocument doc(4096);
+  //int id = config["conectorSessao"]["id"];
+  String nome = config["conectorSessao"]["nome"];
+  String usuario = config["conectorSessao"]["usuario"];
+  String senha = config["conectorSessao"]["senha"];
+  String btnsJson  = config["buttonIOTSessao"];
+  String retorno = "";
+
+  DynamicJsonDocument buttonIOTs(4096);
+  deserializeJson(buttonIOTs,btnsJson);
+
+
+
+  
   doc["status"] = "LOGIN";
+  doc["tipo"] = "IOT";
+  doc["nome"] = nome;
+  doc["usuario"] = usuario;
+  doc["senha"]   = senha;
+  doc["iot"]["name"] = "Testando....";
+  doc["iot"]["jSon"] = btnsJson;
+  doc["buttons"] = buttonIOTs;
   serializeJson(doc, retorno);
   return retorno + "\r\n";
 }
@@ -195,22 +250,184 @@ void taskAlive(void *arg) {
       cli.stop();
     }
   }
+  vTaskDelete(NULL);
 }
 
 void processar(String dados) {
-  DynamicJsonDocument conector(2048);
+  DynamicJsonDocument conector(4096);
+  //Serial.println("Dados:"+dados);
   deserializeJson(conector,dados);
   String idConector = conector["id"];
   String stConector = conector["status"];
   if(stConector == "LOGIN_OK"){
+    Serial.println("LOGIN_OK");
     par * p = new par;
     p->par1 = idConector;
     xTaskCreatePinnedToCore(taskAlive, "taskAlive",2048*4,(void*)p,4,NULL,APP_CPU_NUM);
   }
   else if(stConector == "CONECTADO"){
+    Serial.println("CONECTADO");
     timeoutAlive = 0;
   }
+  else if(stConector == "PROCESSARBTN"){    
+      Serial.println("PROCESSARBTN");
+     for(int i=0;i<conector["buttons"].size();i++) {
+        if(conector["buttons"][i]["status"] == "OFF") {
+          String gpioNum = conector["buttons"][i]["gpioNumControle"];
+          Serial.println("OFF:"+gpioNum);
+          digitalWrite( conector["buttons"][i]["gpioNumControle"],LOW);
+        }
+        else{
+          String gpioNum = conector["buttons"][i]["gpioNumControle"];
+          Serial.println("ON:"+gpioNum);
+          digitalWrite( conector["buttons"][i]["gpioNumControle"],HIGH);
+        }
+     }
+  }
 }
+
+void atualizarServidor(void *p) {
+    pino * pin = (pino *)p;
+  
+    switch(digitalRead(pin->pinOUT)){
+      case HIGH:
+       if(cli.connected())
+          Serial.println(atualizar(pin->pinOUT,"HIGH"));
+        break;
+      case LOW:
+         if(cli.connected())
+          Serial.println(atualizar(pin->pinOUT,"LOW"));
+        break;
+    }
+
+     vTaskDelete(NULL);
+
+}
+
+void trataInterrupcao(void * p){
+  pino * pin = (pino *)p;
+  Serial.println("Interrupcao do pino "+String(pin->pinInterrupcao));
+  if(pin->direcao == INPUT){
+    if(pin->tipo == "0"){
+      for(int i=0; i<10 ;i++){
+        if(pin->pinosOUT[i]!=-1){
+          switch(digitalRead(pin->pinIN)){
+            case HIGH:
+              //Serial.println("Ativando:"+String(pin->pinosOUT[i]));
+              digitalWrite(pin->pinosOUT[i],HIGH);
+              break;
+            case LOW:
+              //Serial.println("Desativando:"+String(pin->pinosOUT[i]));
+              digitalWrite(pin->pinosOUT[i],LOW);
+              break;
+          }
+        }
+      }
+    }
+  }
+  else if(pin->direcao == OUTPUT){
+    xTaskCreatePinnedToCore(atualizarServidor, "atualizarServidor",8192,pin,4,NULL,APP_CPU_NUM);
+
+  } 
+}
+
+void inicializarButtons(String jSon){
+  DynamicJsonDocument buttonIOTs(4096);
+  deserializeJson(buttonIOTs,jSon);
+  
+  int pinosIn[10][10];
+  for(int i =0; i <10 ; i++)
+    for(int j =0; j <10 ; j++)
+      pinosIn[i][j] = -1;
+  
+
+  for(int i=0;i<buttonIOTs.size();i++) {
+
+    
+    String status = buttonIOTs[i]["status"];
+    String funcao = buttonIOTs[i]["funcao"];
+    int in = buttonIOTs[i]["gpioNum"];
+    int out = buttonIOTs[i]["gpioNumControle"];
+
+    Serial.println("Incializando IN["+String(in)+"] OUT["+String(out)+"]");
+
+    pinMode(in,INPUT_PULLUP);
+    pinMode(out,OUTPUT);
+
+    if(status == "ON")
+      digitalWrite(out,HIGH);
+    else
+      digitalWrite(out,LOW);
+   
+       
+    pino * pinOut = new pino;
+    pinOut->pinOUT = out;
+    pinOut->pinIN = in;
+    pinOut->tipo = funcao;
+    pinOut->direcao = OUTPUT;
+    pinOut->pinInterrupcao = out;
+    attachInterruptArg(out, trataInterrupcao,pinOut, CHANGE);
+
+    
+    bool bAchou = false;
+    for(int j =0; j <10 ; j++){
+      if(pinosIn[j][0] == in){
+        for(int k =2; k <10 ; k++){
+          if(pinosIn[j][k] == -1){
+            pinosIn[j][k] = out;  
+            break;
+          }
+        }
+        bAchou = true;
+        break;
+      }
+    }
+    if(!bAchou){
+      for(int j =0; j <10 ; j++){
+        if(pinosIn[j][0] == -1){
+          if(buttonIOTs[i]["funcao"] == "HOLD" || buttonIOTs[i]["funcao"] == "KEY")
+            pinosIn[j][1] = 0;
+          else if(buttonIOTs[i]["funcao"] == "PUSH")
+            pinosIn[j][1] = 1;
+          pinosIn[j][0] = in;
+          pinosIn[j][2] = out;
+          break;
+        }
+      }  
+    }    
+  }
+  
+  for(int i =0; i <10 ; i++)
+  {
+    if(pinosIn[i][0] != -1){
+      pino * pinIN = new pino;
+      int k =0;
+      for(int j =2 ; j<10;j++){        
+        if(pinosIn[i][j] != -1)
+          pinIN->pinosOUT[k++] = pinosIn[i][j]; 
+      }
+      Serial.println("Configurando pino in " +String(pinosIn[i][0])+ " para pinos out ");
+      for(int l =0;l<10;l++){
+        Serial.print(String(pinIN->pinosOUT[l])+" " );
+      }
+      Serial.println(".");
+      pinIN->pinOUT =  -1;
+      pinIN->pinIN = pinosIn[i][0];
+      pinIN->tipo =  String(pinosIn[i][1]);
+      pinIN->direcao = INPUT;
+      pinIN->pinInterrupcao = pinosIn[i][0];
+      if(String(pinosIn[i][1]) == "0")
+        attachInterruptArg(pinosIn[i][0], trataInterrupcao,pinIN, CHANGE);
+      else if(String(pinosIn[i][1]) == "1")
+        attachInterruptArg(pinosIn[i][0], trataInterrupcao,pinIN, FALLING);
+    }
+  }
+    
+
+}
+
+
+
 
 void taskCliente(void *arg) {
   
@@ -233,22 +450,32 @@ void taskCliente(void *arg) {
     else
       vTaskDelay(1000);
   }
+  vTaskDelete(NULL);
 }
+
+
 
 void setup() {
   Serial.begin(115200);  
+  delay(5000);
+  Serial.println("Inciando.");
   SerialBT.begin("neuverseBTIot");
-  leArquivoConfig();
-  config["statusConWifi"] = "Aguardando";
-   String serverLocal =config["servidorSessao"]["endereco"];
-  server = serverLocal;
-  porta = config["servidorSessao"]["porta"];
-  String ssidLocal = config["ssidSessao"]["ssid"];
-  String passLocal = config["ssidSessao"]["password"];
-  ssid = ssidLocal;
-  pass = passLocal;
-  iniciaWifi();
-  xTaskCreatePinnedToCore(taskConfig, "taskConfig",2048,NULL,4,NULL,APP_CPU_NUM);
+   xTaskCreatePinnedToCore(taskConfig, "taskConfig",2048,NULL,4,NULL,APP_CPU_NUM);
+  if(leArquivoConfig() != ""){
+    String btnsJson  = config["buttonIOTSessao"];
+    inicializarButtons(btnsJson);
+    config["statusConWifi"] = "Aguardando";
+    String serverLocal =config["servidorSessao"]["endereco"];
+    server = serverLocal;
+    porta = config["servidorSessao"]["porta"];
+    String ssidLocal = config["ssidSessao"]["ssid"];
+    String passLocal = config["ssidSessao"]["password"];
+    ssid = ssidLocal;
+    pass = passLocal;
+    iniciaWifi();   
+  }
+  else
+    Serial.println("Configuracao vazia");
 } 
 
 void loop() {
